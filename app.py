@@ -1,4 +1,5 @@
 from flask import Flask, jsonify
+import os
 
 from agents.intent_agent import detect_intent
 from agents.task_agent import extract_task
@@ -22,7 +23,7 @@ app = Flask(__name__)
 # 🔹 Home Route
 @app.route("/")
 def home():
-    return "🚀 AI Email Agent (Final System + Analytics Running)"
+    return "🚀 AI Email Agent (Live on Render)"
 
 
 # 🔥 AUTO EMAIL SYSTEM
@@ -49,7 +50,6 @@ def auto_email():
         increment("skipped")
         mark_email_processed(email_id)
         mark_as_read(email_id)
-
         return {"message": "Skipped (not important)"}
 
     # 🧠 Memory Context
@@ -92,5 +92,7 @@ def analytics():
     return jsonify(get_analytics())
 
 
+# 🔥 Render-compatible run
 if __name__ == "__main__":
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
