@@ -1,7 +1,7 @@
 import os
 import base64
-import re
 import json
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -14,182 +14,23 @@ from googleapiclient.discovery import build
 SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 
 
-# 🔑 AUTH SERVICE (FIXED FOR RENDER ✅)
+# 🔑 AUTH (Render ENV based)
 def get_gmail_service():
-    creds = None
-
-    # 🔥 Read from ENV variable
     token_data = os.environ.get("GOOGLE_TOKEN")
 
-    if token_data:
-        creds_dict = json.loads(token_data)
-        creds = Credentials.from_authorized_user_info(creds_dict, SCOPES)
+    if not token_data:
+        raise Exception("❌ GOOGLE_TOKEN not found")
 
-    if not creds:
-        raise Exception("❌ GOOGLE_TOKEN not found in environment variables")
+    creds_dict = json.loads(token_data)
+    creds = Credentials.from_authorized_user_info(creds_dict, SCOPES)
 
-    # Refresh token if expired
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
 
     return build('gmail', 'v1', credentials=creds)
 
 
-# 📌 EMAIL TRACKING
-def is_email_processed(email_id):
-    if not os.path.exists("processed_emails.txt"):
-        return False
-    with open("processed_emails.txt", "r") as f:
-        return email_id in f.read().splitlines()
-
-
-def mark_email_processed(email_id):
-    with open("processed_emails.txt", "a") as f:
-        f.write(email_id + "\n")
-
-
-def mark_as_read(email_id):
-    service = get_gmail_service()
-    service.users().messages().modify(
-        userId='me',
-        id=email_id,
-        body={'removeLabelIds': ['UNREAD']}
-    ).execute()
-
-
-# 📩 HELPER
-def extract_sender(headers):
-    for header in headers:
-        if header['name'] == 'From':
-            sender = header['value']
-            match = re.search(r'<(.+?)>', sender)
-            return match.group(1) if match else sender
-    return ""
-
-
-# 📥 FETCH SINGLE EMAIL
-def get_latest_email():
-    try:
-        service = get_gmail_service()
-
-        results = service.users().messages().list(
-            userId='me',
-            labelIds=['INBOX'],
-            q="is:unread",
-            maxResults=1
-        ).execute()
-
-        messages = results.get('messages', [])
-        if not messages:
-            return None
-
-        email_id = messages[0]['id']
-
-        if is_email_processed(email_id):
-            return None
-
-        msg = service.users().messages().get(
-            userId='me',
-            id=email_id,
-            format='full'
-        ).execute()
-
-        payload = msg.get('payload', {})
-        headers = payload.get('headers', [])
-
-        sender = extract_sender(headers)
-
-        parts = payload.get('parts', [])
-        data = ""
-
-        if parts:
-            for part in parts:
-                if part.get('mimeType') == 'text/plain':
-                    data = part.get('body', {}).get('data')
-                    break
-        else:
-            data = payload.get('body', {}).get('data')
-
-        if data:
-            body = base64.urlsafe_b64decode(data).decode('utf-8')
-        else:
-            body = msg.get('snippet', '')
-
-        return {"id": email_id, "body": body, "sender": sender}
-
-    except Exception as e:
-        return {"error": str(e)}
-
-
-# 📥 FETCH MULTIPLE EMAILS
-def fetch_emails(max_results=10):
-    try:
-        service = get_gmail_service()
-
-        results = service.users().messages().list(
-            userId='me',
-            labelIds=['INBOX'],
-            maxResults=max_results
-        ).execute()
-
-        messages = results.get('messages', [])
-        email_list = []
-
-        for msg_data in messages:
-            msg = service.users().messages().get(
-                userId='me',
-                id=msg_data['id'],
-                format='metadata',
-                metadataHeaders=['Subject', 'From']
-            ).execute()
-
-            headers = msg.get('payload', {}).get('headers', [])
-
-            subject = ""
-            sender = ""
-
-            for h in headers:
-                if h['name'] == 'Subject':
-                    subject = h['value']
-                if h['name'] == 'From':
-                    sender = h['value']
-
-            email_list.append({
-                "id": msg_data['id'],
-                "sender": sender,
-                "subject": subject,
-                "snippet": msg.get('snippet', '')
-            })
-
-        return email_list
-
-    except Exception as e:
-        return [{"error": str(e)}]
-
-
-# 📤 SEND REPLY
-def send_email_reply(to_email, subject, message_text):
-    try:
-        service = get_gmail_service()
-
-        message = MIMEText(message_text)
-        message['to'] = to_email
-        message['subject'] = subject
-
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-
-        service.users().messages().send(
-            userId="me",
-            body={'raw': raw}
-        ).execute()
-
-        return "✅ Email sent"
-
-    except Exception as e:
-        return f"❌ Error: {str(e)}"
-
-
-# 🚀 SEND EMAIL WITH ATTACHMENT
+# 📤 SEND EMAIL
 def send_email(to, subject, body, attachment=None):
     try:
         service = get_gmail_service()
@@ -223,3 +64,14 @@ def send_email(to, subject, body, attachment=None):
 
     except Exception as e:
         return f"❌ Error: {str(e)}"
+
+
+# 📤 BULK EMAIL
+def send_bulk_emails(email_list, subject, body):
+    results = []
+
+    for email in email_list:
+        status = send_email(email, subject, body)
+        results.append({"email": email, "status": status})
+
+    return results
