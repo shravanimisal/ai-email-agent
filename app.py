@@ -1,12 +1,19 @@
 from flask import Flask, request, jsonify, Response
 import os
 
-from services.gmail_service import send_email
+from services.gmail_service import send_email, extract_emails_from_file
 from agents.assistant_agent import (
     generate_ai_email,
     improve_email,
     personalize_email,
     chat_with_ai
+)
+
+from utils.analytics_manager import (
+    categorize_email,
+    update_category_stats,
+    load_analytics,
+    is_spam_email
 )
 
 app = Flask(__name__)
@@ -21,24 +28,20 @@ def home():
 
 
 # =========================
-# ✉️ AI EMAIL GENERATION (FIXED)
+# ✉️ AI EMAIL GENERATION
 # =========================
 @app.route("/ai/generate", methods=["POST"])
 def generate_email():
     data = request.json
 
-    prompt = data.get("prompt")
-    tone = data.get("tone", "professional")
-    length = data.get("length", "medium")
-    language = data.get("language", "English")
-    user_id = data.get("user_id", "default")
+    email = generate_ai_email(
+        data.get("prompt"),
+        data.get("tone", "professional"),
+        data.get("length", "medium"),
+        data.get("language", "English"),
+        data.get("user_id", "default")
+    )
 
-    if not prompt:
-        return {"error": "Prompt required"}, 400
-
-    email = generate_ai_email(prompt, tone, length, language, user_id)
-
-    # 🔥 IMPORTANT FIX → RETURN CLEAN TEXT
     return Response(email, mimetype="text/plain")
 
 
@@ -47,84 +50,127 @@ def generate_email():
 # =========================
 @app.route("/ai/chat", methods=["POST"])
 def ai_chat():
-    data = request.json
-    message = data.get("message")
-
-    if not message:
-        return {"error": "Message required"}, 400
-
-    reply = chat_with_ai(message)
-    return {"reply": reply}
+    message = request.json.get("message")
+    return {"reply": chat_with_ai(message)}
 
 
 # =========================
-# ✨ IMPROVE EMAIL
-# =========================
-@app.route("/ai/improve", methods=["POST"])
-def improve():
-    data = request.json
-    email_text = data.get("email")
-
-    if not email_text:
-        return {"error": "Email text required"}, 400
-
-    improved = improve_email(email_text)
-    return {"improved_email": improved}
-
-
-# =========================
-# 👤 PERSONALIZE EMAIL
-# =========================
-@app.route("/ai/personalize", methods=["POST"])
-def personalize():
-    data = request.json
-    email_text = data.get("email")
-    name = data.get("name")
-
-    if not email_text or not name:
-        return {"error": "Email and name required"}, 400
-
-    result = personalize_email(email_text, name)
-    return {"personalized_email": result}
-
-
-# =========================
-# 📧 SEND EMAIL (WITH ATTACHMENT)
+# 📧 SEND SINGLE EMAIL
 # =========================
 @app.route("/send-email", methods=["POST"])
 def send_single_email():
-    to = request.form.get("to") or request.values.get("to")
-    subject = request.form.get("subject") or request.values.get("subject")
-    body = request.form.get("body") or request.values.get("body")
+    data = request.form if request.form else request.json
+
+    to = data.get("to")
+    subject = data.get("subject", "No Subject")
+    body = data.get("body", "")
 
     if not to:
-        return {"error": "Recipient email required"}, 400
+        return {"error": "Recipient required"}, 400
 
-    if not subject:
-        subject = "No Subject"
+    category = categorize_email(subject, body)
 
-    if not body:
-        body = "Hello from AI agent"
+    if is_spam_email(subject, body):
+        update_category_stats("Spam")
+        return {"status": "blocked", "reason": "spam detected"}
 
-    attachment_file = request.files.get("attachment")
-    attachment_path = None
+    update_category_stats(category)
 
-    if attachment_file:
-        filename = attachment_file.filename.replace(" ", "_")
-        attachment_path = os.path.join(UPLOAD_FOLDER, filename)
-        attachment_file.save(attachment_path)
+    # 🔥 ATTACHMENT SUPPORT (SINGLE)
+    attachment = request.files.get("attachment")
 
-    result = send_email(to, subject, body, attachment_path)
+    result = send_email(to, subject, body, attachment)
 
-    return jsonify({
-        "message": "Email sent successfully",
-        "result": str(result)
-    })
+    return {
+        "status": result,
+        "category": category
+    }
 
 
 # =========================
-# 🚀 SERVER START
+# 🚀 BULK SEND (UPDATED WITH ATTACHMENT)
+# =========================
+@app.route("/send-bulk", methods=["POST"])
+def send_bulk():
+    file = request.files.get("file")
+    subject = request.form.get("subject")
+    body = request.form.get("body")
+
+    # 🔥 NEW: attachment support
+    attachment = request.files.get("attachment")
+
+    if not file:
+        return {"error": "File required"}, 400
+
+    path = os.path.join(UPLOAD_FOLDER, file.filename)
+    file.save(path)
+
+    emails = extract_emails_from_file(path)
+
+    sent, spam, failed = 0, 0, 0
+    results = []
+
+    # 🔥 IMPORTANT: read attachment ONCE
+    attachment_data = None
+    attachment_name = None
+    attachment_type = None
+
+    if attachment:
+        attachment_data = attachment.read()
+        attachment_name = attachment.filename
+        attachment_type = attachment.content_type
+
+    for email in emails:
+        if is_spam_email(subject, body):
+            spam += 1
+            update_category_stats("Spam")
+            results.append({"email": email, "status": "spam_blocked"})
+            continue
+
+        category = categorize_email(subject, body)
+        update_category_stats(category)
+
+        try:
+            # 🔥 send email with attachment
+            result = send_email(
+                email,
+                subject,
+                body,
+                attachment_data,
+                attachment_name,
+                attachment_type
+            )
+
+            if "sent" in result:
+                sent += 1
+            else:
+                failed += 1
+
+        except Exception as e:
+            failed += 1
+            result = f"error: {str(e)}"
+
+        results.append({"email": email, "status": result})
+
+    return {
+        "total": len(emails),
+        "sent": sent,
+        "spam_blocked": spam,
+        "failed": failed,
+        "results": results
+    }
+
+
+# =========================
+# 📊 ANALYTICS
+# =========================
+@app.route("/analytics/categories", methods=["GET"])
+def get_categories():
+    return jsonify(load_analytics().get("categories", {}))
+
+
+# =========================
+# 🚀 RUN
 # =========================
 if __name__ == "__main__":
-    print("🚀 Server starting on http://127.0.0.1:5000")
-    app.run(host="127.0.0.1", port=5000, debug=False, use_reloader=False)
+    app.run(debug=True)

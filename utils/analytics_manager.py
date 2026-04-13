@@ -1,91 +1,82 @@
+import json
 import os
-from dotenv import load_dotenv
-from openai import OpenAI
 
-from utils.memory_manager import (
-    save_user_preferences,
-    get_user_preferences,
-    save_email_history
-)
-
-load_dotenv()
-
-client = OpenAI(
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    base_url="https://openrouter.ai/api/v1",
-    default_headers={
-        "HTTP-Referer": "http://localhost:5000",
-        "X-Title": "AI Email Agent"
-    }
-)
-
-MODEL = "mistralai/mistral-7b-instruct"
-
-# ✅ ALLOWED LANGUAGES ONLY
-SUPPORTED_LANGUAGES = ["English", "Hindi", "Marathi"]
+ANALYTICS_FILE = "analytics.json"
 
 
-def get_ai_response(messages):
-    try:
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            temperature=0.2,   # 🔥 VERY IMPORTANT (low randomness)
-            top_p=0.9
-        )
+# =========================
+# 📂 LOAD ANALYTICS
+# =========================
+def load_analytics():
+    if not os.path.exists(ANALYTICS_FILE):
+        return {
+            "categories": {
+                "Work": 0,
+                "Personal": 0,
+                "Promotions": 0,
+                "Spam": 0
+            }
+        }
 
-        if response and response.choices:
-            return response.choices[0].message.content.strip()
-        else:
-            return "❌ AI Error: No response from model"
-
-    except Exception as e:
-        return f"❌ AI Error: {str(e)}"
+    with open(ANALYTICS_FILE, "r") as f:
+        return json.load(f)
 
 
-# 🚀 STRICT MULTILINGUAL EMAIL GENERATOR
-def generate_ai_email(prompt, tone="professional", length="medium", language="English", user_id="default"):
-    try:
-        if language == "Hindi":
-            lang_instruction = "ONLY Hindi language. Use Devanagari script."
-        elif language == "Marathi":
-            lang_instruction = "ONLY Marathi language. Use Devanagari script."
-        else:
-            lang_instruction = "ONLY English language."
+# =========================
+# 💾 SAVE ANALYTICS
+# =========================
+def save_analytics(data):
+    with open(ANALYTICS_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
-        system_prompt = f"""
-You are an email generator.
 
-STRICT RULES:
-- {lang_instruction}
-- DO NOT use any other language
-- DO NOT translate
-- DO NOT explain anything
-- NO placeholders like [Your Name]
-- Output must be clean email
+# =========================
+# 📊 UPDATE CATEGORY COUNT
+# =========================
+def update_category_stats(category):
+    data = load_analytics()
 
-FORMAT:
-Subject:
-<subject>
+    if "categories" not in data:
+        data["categories"] = {}
 
-<email>
+    if category not in data["categories"]:
+        data["categories"][category] = 0
 
-<closing>
-"""
+    data["categories"][category] += 1
 
-        user_prompt = f"""
-Write a {tone} and {length} email.
+    save_analytics(data)
 
-Topic:
-{prompt}
-"""
 
-        response = get_ai_response([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ])
+# =========================
+# 🧠 EMAIL CATEGORY LOGIC
+# =========================
+def categorize_email(subject, body):
+    text = (subject + " " + body).lower()
 
-        return response
+    if any(word in text for word in ["offer", "sale", "discount", "deal"]):
+        return "Promotions"
 
-    except Exception as e:
-        return f"❌ AI Error: {str(e)}"
+    elif any(word in text for word in ["meeting", "project", "deadline", "client"]):
+        return "Work"
+
+    elif any(word in text for word in ["family", "friend", "party", "home"]):
+        return "Personal"
+
+    elif any(word in text for word in ["win", "lottery", "free money", "urgent prize"]):
+        return "Spam"
+
+    else:
+        return "Work"
+    
+# =========================
+# 🚫 SPAM DETECTION
+# =========================
+def is_spam_email(subject, body):
+    text = (subject + " " + body).lower()
+
+    spam_keywords = [
+        "win money", "free offer", "click here",
+        "urgent response", "lottery", "claim now"
+    ]
+
+    return any(word in text for word in spam_keywords)
