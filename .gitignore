@@ -1,18 +1,9 @@
-# Python
 venv/
-__pycache__/
-*.pyc
-
-# Environment
-.env
-
-# Gmail API secrets
 token.json
 credentials.json
-
-# Uploads
+.env
 uploads/
-
-# System
-.DS_Store
-Thumbs.dbc
+__pycache__/
+analytics.json
+memory.json
+processed_emails.txt
